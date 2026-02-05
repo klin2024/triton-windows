@@ -1,5 +1,6 @@
 import functools
 import os
+import sys
 import platform
 import subprocess
 import re
@@ -236,14 +237,23 @@ class HIPUtils(object):
         else:
             hip_utils_cache_key = None
 
-        libhip_path = _get_path_to_hip_runtime_dylib()
-        # Escape backslashes for C string embedding
-        libhip_path_escaped = libhip_path.replace("\\", "\\\\")
-        src = Path(os.path.join(dirname, "driver.c")).read_text()
-        # Just do a simple search and replace here instead of templates or format strings.
-        # This way we don't need to escape-quote C code curly brackets and we can replace
-        # exactly once.
-        src = src.replace('/*py_libhip_search_path*/', libhip_path_escaped, 1)
+        # check if we need to read & compile driver.c
+        skip_read_src = False
+        if (getattr(sys, 'frozen', False)) and (hip_utils_cache_key is not None):
+            skip_read_src = True
+
+        if skip_read_src:
+            src = "// dummy content"
+        else:
+            libhip_path = _get_path_to_hip_runtime_dylib()
+            # Escape backslashes for C string embedding
+            libhip_path_escaped = libhip_path.replace("\\", "\\\\")
+            src = Path(os.path.join(dirname, "driver.c")).read_text()
+            # Just do a simple search and replace here instead of templates or format strings.
+            # This way we don't need to escape-quote C code curly brackets and we can replace
+            # exactly once.
+            src = src.replace('/*py_libhip_search_path*/', libhip_path_escaped, 1)
+
         mod = compile_module_from_src(src=src, name="hip_utils", include_dirs=include_dirs, override_cache_key=hip_utils_cache_key)
         self.load_binary = mod.load_binary
         self.get_device_properties = mod.get_device_properties
