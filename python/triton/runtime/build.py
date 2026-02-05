@@ -153,8 +153,14 @@ def _load_module_from_path(name: str, path: str) -> ModuleType:
 
 def compile_module_from_src(src: str, name: str, library_dirs: list[str] | None = None,
                             include_dirs: list[str] | None = None, libraries: list[str] | None = None,
-                            ccflags: list[str] | None = None) -> ModuleType:
-    key = hashlib.sha256((src + platform_key()).encode("utf-8")).hexdigest()
+                            ccflags: list[str] | None = None,
+                            override_cache_key = None) -> ModuleType:
+    if override_cache_key is None:
+        key = hashlib.sha256((src + platform_key()).encode("utf-8")).hexdigest()
+    else:
+        # print(f"[triton] compile_module_from_src use cache key: {override_cache_key}")
+        key = override_cache_key
+
     cache = get_cache_manager(key)
     suffix = sysconfig.get_config_var("EXT_SUFFIX")
     cache_path = cache.get_file(f"{name}{suffix}")

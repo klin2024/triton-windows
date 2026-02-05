@@ -217,8 +217,8 @@ static int checkDriverVersion(void *lib) {
   dlerror(); // Clear existing errors
   hipDriverGetVersion =
       (hipDriverGetVersion_fn)dlsym(lib, "hipDriverGetVersion");
-  error = dlerror();
-  if (error) {
+  if (hipDriverGetVersion == NULL) {
+    error = dlerror();
     PyErr_SetString(PyExc_RuntimeError,
                     "cannot query 'hipDriverGetVersion' from libamdhip64.so");
     dlclose(lib);
@@ -250,15 +250,23 @@ static int checkDriverVersion(void *lib) {
 }
 
 bool initSymbolTable() {
-  void *lib;
+  void *lib = NULL;
+
+  {
+      void *handle = dlopen("amdhip64_7.dll", RTLD_LAZY | RTLD_LOCAL);
+        if (handle) {
+        lib = handle;
+        // printf("[triton] chosen amdhip64_7.dll\n");
+        }
+    }
 
   // Go through the list of search paths to dlopen the first HIP driver library.
   int n = sizeof(hipLibSearchPaths) / sizeof(hipLibSearchPaths[0]);
-  for (int i = 0; i < n; ++i) {
+  for (int i = 0; (i < n) && (lib == NULL); ++i) {
     void *handle = dlopen(hipLibSearchPaths[i], RTLD_LAZY | RTLD_LOCAL);
     if (handle) {
       lib = handle;
-      // printf("[triton] chosen %s\n", hipLibSearchPaths[i]);
+      // printf("[triton] chosen> %s\n", hipLibSearchPaths[i]);
     }
   }
 
@@ -279,8 +287,8 @@ bool initSymbolTable() {
   dlerror(); // Clear existing errors
 
   *(void **)&hipGetProcAddress = dlsym(lib, "hipGetProcAddress");
-  error = dlerror();
-  if (error) {
+  if (hipGetProcAddress == NULL) {
+    error = dlerror();
     PyErr_SetString(PyExc_RuntimeError,
                     "cannot query 'hipGetProcAddress' from libamdhip64.so");
     dlclose(lib);
