@@ -1,5 +1,6 @@
 import functools
 import os
+import sys
 import platform
 import subprocess
 import re
@@ -224,21 +225,36 @@ def _get_path_to_hip_runtime_dylib():
 
 class HIPUtils(object):
 
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         if not hasattr(cls, "instance"):
             cls.instance = super(HIPUtils, cls).__new__(cls)
         return cls.instance
 
-    def __init__(self):
-        libhip_path = _get_path_to_hip_runtime_dylib()
-        # Escape backslashes for C string embedding
-        libhip_path_escaped = libhip_path.replace("\\", "\\\\")
-        src = Path(os.path.join(dirname, "driver.c")).read_text()
-        # Just do a simple search and replace here instead of templates or format strings.
-        # This way we don't need to escape-quote C code curly brackets and we can replace
-        # exactly once.
-        src = src.replace('/*py_libhip_search_path*/', libhip_path_escaped, 1)
-        mod = compile_module_from_src(src=src, name="hip_utils", include_dirs=include_dirs)
+    def __init__(self, override_cache_key=None):
+        # print(f"[triton] HIPUtils override_cache_key {override_cache_key}")
+        if override_cache_key is not None:
+            hip_utils_cache_key = override_cache_key.get('rocm_utils', None)
+        else:
+            hip_utils_cache_key = None
+
+        # check if we need to read & compile driver.c
+        skip_read_src = False
+        if (getattr(sys, 'frozen', False)) and (hip_utils_cache_key is not None):
+            skip_read_src = True
+
+        if skip_read_src:
+            src = "// dummy content"
+        else:
+            libhip_path = _get_path_to_hip_runtime_dylib()
+            # Escape backslashes for C string embedding
+            libhip_path_escaped = libhip_path.replace("\\", "\\\\")
+            src = Path(os.path.join(dirname, "driver.c")).read_text()
+            # Just do a simple search and replace here instead of templates or format strings.
+            # This way we don't need to escape-quote C code curly brackets and we can replace
+            # exactly once.
+            src = src.replace('/*py_libhip_search_path*/', libhip_path_escaped, 1)
+
+        mod = compile_module_from_src(src=src, name="hip_utils", include_dirs=include_dirs, override_cache_key=hip_utils_cache_key)
         self.load_binary = mod.load_binary
         self.get_device_properties = mod.get_device_properties
         self.create_tdm_descriptor = mod.create_tdm_descriptor
@@ -523,9 +539,17 @@ static struct HIPSymbolTable hipSymbolTable;
 bool initSymbolTable() {{
   void *lib = NULL;
 
+  {{
+    void *handle = dlopen("amdhip64_7.dll", RTLD_LAZY | RTLD_LOCAL);
+    if (handle) {{
+      lib = handle;
+      // printf("[triton] chosen amdhip64_7.dll\\n");
+    }}
+  }}
+
   // Go through the list of search paths to open the first HIP driver library.
   int n = sizeof(hipLibSearchPaths) / sizeof(hipLibSearchPaths[0]);
-  for (int i = 0; i < n; ++i) {{
+  for (int i = 0; (i < n) && (lib == NULL); ++i) {{
     void *handle = dlopen(hipLibSearchPaths[i], RTLD_LAZY | RTLD_LOCAL);
     if (handle) {{
       lib = handle;
@@ -544,8 +568,8 @@ bool initSymbolTable() {{
   dlerror(); // Clear existing errors
   const char *error = NULL;
   *(void **)&hipGetProcAddress = dlsym(lib, "hipGetProcAddress");
-  error = dlerror();
-  if (error) {{
+  if (hipGetProcAddress == NULL) {{
+    error = dlerror();
     PyErr_SetString(PyExc_RuntimeError,
                     "cannot query 'hipGetProcAddress' from HIP runtime library");
     dlclose(lib);
@@ -900,14 +924,19 @@ def wrap_handle_tensordesc(launcher, signature, tensordesc_metadata):
 
 class HIPLauncher(object):
 
-    def __init__(self, src, metadata):
+    def __init__(self, src, metadata, override_cache_key=None):
+        if override_cache_key is not None:
+            hip_launcher_cache_key = override_cache_key.get('triton_launcher', None)
+        else:
+            hip_launcher_cache_key = None
+
         constants = src.constants if hasattr(src, "constants") else dict()
         arg_idx = lambda x: (src.fn.arg_names.index(x), ) if isinstance(x, str) else x
         constants = {arg_idx(idx): value for idx, value in constants.items()}
         signature = {idx: value for idx, value in src.signature.items()}
         tensordesc_meta = getattr(metadata, "tensordesc_meta", None)
         src = make_launcher(constants, signature, metadata.warp_size, tensordesc_meta)
-        mod = compile_module_from_src(src=src, name="__triton_launcher", include_dirs=include_dirs)
+        mod = compile_module_from_src(src=src, name="__triton_launcher", include_dirs=include_dirs, override_cache_key=hip_launcher_cache_key)
         self.launch = wrap_handle_tensordesc(mod.launch, signature, tensordesc_meta)
         self.launch_cooperative_grid = metadata.launch_cooperative_grid
         self.profile_scratch_size = metadata.profile_scratch_size
@@ -931,9 +960,9 @@ class HIPLauncher(object):
 
 class HIPDriver(GPUDriver):
 
-    def __init__(self):
+    def __init__(self, override_cache_key=None):
         super().__init__()
-        self.utils = HIPUtils()
+        self.utils = HIPUtils(override_cache_key=override_cache_key)
         self.launcher_cls = HIPLauncher
 
     def get_device_interface(self):

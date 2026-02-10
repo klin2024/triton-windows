@@ -223,7 +223,9 @@ class CompileTimer:
         )
 
 
-def compile(src, target=None, options=None, _env_vars=None):
+def compile(src, target=None, options=None, _env_vars=None,
+            override_func_name_key=None,
+            override_cache_key=None):
     compilation_listener = knobs.compilation.listener
     if compilation_listener:
         timer = CompileTimer()
@@ -243,7 +245,12 @@ def compile(src, target=None, options=None, _env_vars=None):
     options = backend.parse_options(dict(options or dict(), **extra_options))
     # create cache manager
     env_vars = get_cache_invalidating_env_vars() if _env_vars is None else _env_vars
-    key = get_cache_key(src, backend, options, env_vars=env_vars)
+    if override_cache_key is None:
+        key = get_cache_key(src, backend, options, env_vars=env_vars)
+    else:
+        # print(f"[triton] Use override_cache_key {override_cache_key}")
+        key = override_cache_key
+
     hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
     fn_cache_manager = get_cache_manager(hash)
     # For dumping/overriding only hash the source as we want it to be independent of triton
@@ -257,7 +264,13 @@ def compile(src, target=None, options=None, _env_vars=None):
     # The final file name in the cache will have a format of f"{filename}.{ext}.tmp.pid_{pid}_{uuid}".
     # A PID string can be 5-character long. A UUID string has typically 36 characters. Let's truncate
     # the file name to 150 characters to be safe.
-    file_name = src.name[:150]
+
+    if override_func_name_key is None:
+        file_name = src.name[:150]
+    else:
+        # print(f"[triton] Use override_func_name_key {override_func_name_key}")
+        file_name = override_func_name_key[:150]
+
     metadata_filename = f"{file_name}.json"
     metadata_group = fn_cache_manager.get_group(metadata_filename) or {}
     metadata_path = metadata_group.get(metadata_filename)
@@ -449,7 +462,7 @@ class CompiledKernel:
 
         device = driver.active.get_current_device()
         # create launcher
-        self._run = driver.active.launcher_cls(self.src, self.metadata)
+        self._run = driver.active.launcher_cls(self.src, self.metadata, self.override_cache_key)
         # not enough shared memory to run the kernel
         max_shared = max_shared_mem(device)
         if self.metadata.shared > max_shared:

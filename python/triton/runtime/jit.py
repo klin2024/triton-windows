@@ -460,7 +460,9 @@ class JITCallable:
         try:
             self.raw_src, self.starting_line_number = inspect.getsourcelines(fn)
         except OSError as e:
-            raise ValueError("@jit functions should be defined in a Python file") from e
+            self.raw_src = """def dummy_emtry()\n    pass"""
+            #  raise ValueError("@jit functions should be defined in a Python file") from e
+            # print("@jit functions should be defined in a Python file")
         self._fn_name = get_full_name(fn)
         self._hash_lock = threading.RLock()
 
@@ -697,6 +699,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         kwargs["instrumentation_mode"] = knobs.compilation.instrumentation_mode
 
         # parse options
+        driver.set_init_kwargs(override_cache_key=self.rocm_cache_key_map)
         device = driver.active.get_current_device()
         stream = driver.active.get_current_stream(device)
 
@@ -740,6 +743,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
             if hasattr(kernel, "result"):
                 kernel = kernel.result()
             # launch kernel
+            kernel.override_cache_key = self.rocm_cache_key_map
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
             kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
                        knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
@@ -749,7 +753,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return self._fn_name if self._repr is None else self._repr(_)
 
     def __init__(self, fn, version=None, do_not_specialize=None, do_not_specialize_on_alignment=None, debug=None,
-                 noinline=None, repr=None, launch_metadata=None):
+                 noinline=None, repr=None, launch_metadata=None, rocm_cache_key_map=None):
         do_not_specialize = do_not_specialize if do_not_specialize else []
         do_not_specialize_on_alignment = do_not_specialize_on_alignment if do_not_specialize_on_alignment else []
 
@@ -783,6 +787,8 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
         # Hooks that will be called prior to executing "run"
         self.pre_run_hooks = []
+
+        self.rocm_cache_key_map = rocm_cache_key_map
 
     def preload(self, specialization_data):
         import json
@@ -830,6 +836,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
             return None
         src = self.ASTSource(self, signature, constexprs, attrs)
 
+        if self.rocm_cache_key_map is not None:
+            code_cache_key = self.rocm_cache_key_map.get('code', None)
+            func_name_key  = self.rocm_cache_key_map.get('func_name', None)
+        else:
+            code_cache_key = None
+            func_name_key  = None
+
         async_mode = _async_compile.active_mode.get()
         if async_mode is not None:
 
@@ -837,7 +850,9 @@ class JITFunction(JITCallable, KernelInterface[T]):
             cache_key = get_cache_key(src, backend, options, env_vars)
 
             def async_compile():
-                return self.compile(src, target=target, options=options.__dict__, _env_vars=env_vars)
+                return self.compile(src, target=target, options=options.__dict__, _env_vars=env_vars,
+                                    override_func_name_key=func_name_key,
+                                    override_cache_key=code_cache_key)
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
@@ -846,7 +861,9 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             kernel = async_mode.submit(cache_key, async_compile, finalize_compile)
         else:
-            kernel = self.compile(src, target=target, options=options.__dict__)
+            kernel = self.compile(src, target=target, options=options.__dict__,
+                                  override_func_name_key=func_name_key,
+                                  override_cache_key=code_cache_key)
             kernel_cache[key] = kernel
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
@@ -879,6 +896,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    rocm_cache_key_map = None,
 ) -> Callable[[T], JITFunction[T]]:
     ...
 
@@ -893,6 +911,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    rocm_cache_key_map = None,
 ) -> KernelInterface[T]:
     """
     Decorator for JIT-compiling a function using the Triton compiler.
@@ -918,7 +937,8 @@ def jit(
             from .interpreter import InterpretedFunction
             return InterpretedFunction(fn, version=version, do_not_specialize=do_not_specialize,
                                        do_not_specialize_on_alignment=do_not_specialize_on_alignment, debug=debug,
-                                       noinline=noinline, repr=repr, launch_metadata=launch_metadata)
+                                       noinline=noinline, repr=repr, launch_metadata=launch_metadata,
+                                       rocm_cache_key_map=rocm_cache_key_map)
         else:
             return JITFunction(
                 fn,
@@ -929,6 +949,7 @@ def jit(
                 noinline=noinline,
                 repr=repr,
                 launch_metadata=launch_metadata,
+                rocm_cache_key_map=rocm_cache_key_map,
             )
 
     if fn is not None:
