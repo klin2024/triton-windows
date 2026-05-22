@@ -445,6 +445,7 @@ class CompiledKernel:
         self.module = None
         self.function = None
         self._run = None
+        self.override_cache_key = None
 
     def _init_handles(self):
         if self.module is not None:
